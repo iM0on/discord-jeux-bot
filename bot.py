@@ -24,7 +24,8 @@ db.commit()
 
 @client.event
 async def on_ready():
-    await tree.sync()
+    guild = discord.Object(id=317645135686926337)
+    await tree.sync(guild=guild)
     print(f"✅ Bot connecté en tant que {client.user}")
 
 @tree.command(name="addjeu", description="Ajouter un jeu à ta liste")
