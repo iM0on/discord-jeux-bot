@@ -1,100 +1,88 @@
-
-import os
 import discord
 from discord import app_commands
-import sqlite3
+import os
+import json
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 intents = discord.Intents.default()
+intents.members = True
+intents.voice_states = True
+
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-db = sqlite3.connect("database.db")
-cursor = db.cursor()
+DATA_FILE = "data.json"
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS games (
-    guild_id INTEGER,
-    user_id INTEGER,
-    game TEXT
-)
-""")
-db.commit()
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w") as f:
+        json.dump({}, f)
+
+def load_data():
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 @client.event
 async def on_ready():
-    guild = discord.Object(id=317645135686926337)
-    await tree.sync(guild=guild)
-    print(f"✅ Bot connecté en tant que {client.user}")
+    await tree.sync()
+    print(f"Logged in as {client.user}")
 
-@tree.command(name="addjeu", description="Ajouter un jeu à ta liste")
-async def addjeu(interaction: discord.Interaction, jeu: str):
-    cursor.execute(
-        "INSERT INTO games VALUES (?, ?, ?)",
-        (interaction.guild.id, interaction.user.id, jeu.lower())
-    )
-    db.commit()
-    await interaction.response.send_message(f"🎮 {jeu} ajouté")
+@tree.command(name="addjeu", description="Add a game to your library")
+async def addjeu(interaction: discord.Interaction, game: str):
+    data = load_data()
+    uid = str(interaction.user.id)
+    data.setdefault(uid, [])
+    if game not in data[uid]:
+        data[uid].append(game)
+        save_data(data)
+    await interaction.response.send_message(f"✅ Jeu ajouté : {game}", ephemeral=True)
 
-@tree.command(name="removejeu", description="Supprimer un jeu")
-async def removejeu(interaction: discord.Interaction, jeu: str):
-    cursor.execute(
-        "DELETE FROM games WHERE guild_id=? AND user_id=? AND game=?",
-        (interaction.guild.id, interaction.user.id, jeu.lower())
-    )
-    db.commit()
-    await interaction.response.send_message(f"❌ {jeu} supprimé")
-
-@tree.command(name="mesjeux", description="Voir ta liste de jeux")
+@tree.command(name="mesjeux", description="Show your games")
 async def mesjeux(interaction: discord.Interaction):
-    cursor.execute(
-        "SELECT game FROM games WHERE guild_id=? AND user_id=?",
-        (interaction.guild.id, interaction.user.id)
-    )
-    games = [g[0] for g in cursor.fetchall()]
-    if games:
-        await interaction.response.send_message("🎮 Tes jeux:\n" + "\n".join(games))
+    data = load_data()
+    games = data.get(str(interaction.user.id), [])
+    if not games:
+        await interaction.response.send_message("❌ Aucun jeu enregistré.", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Aucun jeu enregistré")
-
-@tree.command(name="setjeux", description="Définir toute ta liste de jeux")
-async def setjeux(interaction: discord.Interaction, jeux: str):
-    cursor.execute(
-        "DELETE FROM games WHERE guild_id=? AND user_id=?",
-        (interaction.guild.id, interaction.user.id)
-    )
-    for game in jeux.split(","):
-        cursor.execute(
-            "INSERT INTO games VALUES (?, ?, ?)",
-            (interaction.guild.id, interaction.user.id, game.strip().lower())
+        await interaction.response.send_message(
+            "🎮 Tes jeux :\n" + "\n".join(games),
+            ephemeral=True
         )
-    db.commit()
-    await interaction.response.send_message("✅ Liste mise à jour")
 
-@tree.command(name="jeu", description="Voir les jeux en commun")
-async def jeu(interaction: discord.Interaction, pseudos: str):
-    pseudos = pseudos.split(";")
-    members = []
-    for p in pseudos:
-        m = discord.utils.find(lambda m: m.name == p, interaction.guild.members)
-        if not m:
-            await interaction.response.send_message(f"❌ Utilisateur introuvable : {p}")
-            return
-        members.append(m.id)
+@tree.command(name="play", description="Common games with your voice channel")
+async def play(interaction: discord.Interaction):
+    if not interaction.user.voice:
+        await interaction.response.send_message(
+            "❌ Tu dois être dans un salon vocal.",
+            ephemeral=True
+        )
+        return
+
+    channel = interaction.user.voice.channel
+    data = load_data()
+
+    members = [m for m in channel.members if not m.bot]
+    if len(members) < 2:
+        await interaction.response.send_message(
+            "❌ Pas assez de joueurs dans le vocal.",
+            ephemeral=True
+        )
+        return
 
     common = None
-    for uid in members:
-        cursor.execute(
-            "SELECT game FROM games WHERE guild_id=? AND user_id=?",
-            (interaction.guild.id, uid)
-        )
-        games = {g[0] for g in cursor.fetchall()}
+    for m in members:
+        games = set(data.get(str(m.id), []))
         common = games if common is None else common & games
 
-    if common:
-        await interaction.response.send_message("🎮 Jeux en commun:\n" + "\n".join(common))
+    if not common:
+        await interaction.response.send_message("😅 Aucun jeu en commun.", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Aucun jeu en commun")
+        await interaction.response.send_message(
+            f"🎧 Jeux en commun ({len(members)} joueurs) :\n" + "\n".join(common)
+        )
 
 client.run(TOKEN)
